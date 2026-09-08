@@ -119,7 +119,17 @@ type Config struct {
 	OIDCClientID     string `envconfig:"ORBITAL_OIDC_CLIENT_ID"          default:"5fc832f6-843e-4207-93dd-b3c3a77c06f2"`
 	OIDCClientSecret string `envconfig:"ORBITAL_OIDC_CLIENT_SECRET"      default:""`
 	OIDCRedirectURL  string `envconfig:"ORBITAL_OIDC_REDIRECT_URL"       default:"http://localhost:8001/auth/callback"`
-	OAuth2DeviceCode bool   `envconfig:"ORBITAL_OAUTH2_DEVICE_CODE"      default:"true"` // enables device code flow for browser SSO; set false to use Authorization Code + PKCE (requires publicly resolvable redirect URI). RFC 8628 — OAuth 2.0, not OIDC despite living next to ORBITAL_OIDC_* settings.
+	// WebLoginOIDC* configures the browser SSO button on orbital's own login
+	// page (Keycloak). Deliberately separate from OIDCIssuerURL/OIDCClientID
+	// above: those remain AAD-only and back the API bearer verifier plus the
+	// external-jwt mode's AAD fallback (orbctl, third-party AAD API clients).
+	// Repointing OIDCIssuerURL at Keycloak would silently break those. No
+	// default issuer/client — the Keycloak login button stays hidden until an
+	// operator sets these. See docs/reference/AUTH.md § Keycloak web login.
+	WebLoginOIDCIssuerURL    string `envconfig:"ORBITAL_WEBLOGIN_OIDC_ISSUER_URL"    default:""`
+	WebLoginOIDCClientID     string `envconfig:"ORBITAL_WEBLOGIN_OIDC_CLIENT_ID"     default:""`
+	WebLoginOIDCClientSecret string `envconfig:"ORBITAL_WEBLOGIN_OIDC_CLIENT_SECRET" default:""`
+	WebLoginOIDCRedirectURL  string `envconfig:"ORBITAL_WEBLOGIN_OIDC_REDIRECT_URL"  default:""`
 	// AppTokenAllowedAppIDs gates which app-only (client-credentials) bearer
 	// tokens orbital accepts on /api/v1 and /graphql. Defaults to allowing
 	// only the orbital app itself (in-pod cb-bundler authenticates as the

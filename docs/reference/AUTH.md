@@ -26,7 +26,8 @@ User identity and per-user audit are hard requirements for orbital. That require
 - **Admin role management UI at `/users`** — server-side rendered Go template (not DataTables). Button group per row (R/D/A), active role highlighted+disabled. Self-row fully disabled. Last-admin guard: `PUT /api/v1/users/:id/role` returns 409. Operation is idempotent (same role → 200 with no DB write).
 - **Readonly UI gating: `CanMutate bool` on `layout.Base`** — `true` for dev and admin. Pages gate action forms behind `{{if .CanMutate}}...{{else}}{{template "access-required" .}}{{end}}`. Pure-action pages (Restore): entire content gated. Mixed pages (Export, Backup, Signed Artifacts): list/table always visible, action form gated.
 - **`can_mutate` is derived from the session cookie, not a DB lookup** — computed in the global session middleware in `server.go` via `RoleAtLeast`. No DB call on GET requests. `RequireRole` is DB-backed on mutating methods (security enforcement boundary). `can_mutate` is a UI display hint only. Role changes take effect on next login. Do not re-add a separate `SetCanMutate` middleware or per-route `can_mutate` wiring.
-- **`ORBITAL_OAUTH2_DEVICE_CODE` defaults to `true`** — device code is the only viable browser SSO for this deployment (private DNS/ILB, no publicly resolvable redirect URI). Set `false` only if deploying on a public URL with a registered redirect URI. No auto-open: Azure AD's v1 `deviceauth` endpoint doesn't support `?otc=` pre-fill. (Renamed from `ORBITAL_OIDC_DEVICE_CODE` — device code is OAuth 2.0 RFC 8628, not OIDC.)
+- ~~**`ORBITAL_OAUTH2_DEVICE_CODE` defaults to `true`** — device code is the only viable browser SSO for this deployment (private DNS/ILB, no publicly resolvable redirect URI). Set `false` only if deploying on a public URL with a registered redirect URI. No auto-open: Azure AD's v1 `deviceauth` endpoint doesn't support `?otc=` pre-fill. (Renamed from `ORBITAL_OIDC_DEVICE_CODE` — device code is OAuth 2.0 RFC 8628, not OIDC.)~~ **Superseded** — browser SSO moved to Keycloak (see § Keycloak web login), which has no equivalent redirect-URI validation restriction, so device code is no longer needed for the web login button. The field, `NewOIDC`'s device-code plumbing, and the `/auth/device*` handlers are left in place (unreachable, always passed `false`) rather than deleted — orbctl's own login is unaffected either way, since it never used this code path.
+- **`ORBITAL_WEBLOGIN_OIDC_*` is a separate config surface from `ORBITAL_OIDC_*`, on purpose.** `ORBITAL_OIDC_ISSUER_URL`/`CLIENT_ID`/`CLIENT_SECRET`/`REDIRECT_URL` remain Azure-AD-only and continue to back the API bearer verifier plus the `external-jwt` mode's AAD fallback (orbctl, third-party AAD API clients — see § External JWT mode). `ORBITAL_WEBLOGIN_OIDC_*` configures only the browser SSO button on orbital's own login page (now Keycloak). Do not repoint `ORBITAL_OIDC_*` at Keycloak — that would silently break AAD bearer validation for orbctl and third-party callers.
 - **`ORBITAL_OIDC_*` env var naming is vendor namespace, not protocol claim.** The runtime flows orbital uses today are OAuth 2.0 — device code (RFC 8628) for browser SSO, Authorization Code + PKCE (RFC 8252) for orbctl. Neither requests `openid` scope; no `id_token` is ever issued. The `OIDC_*` prefix on env vars reflects (a) Azure AD's "OpenID Connect" app-registration vocabulary, and (b) that bearer-token validation uses OIDC infrastructure (discovery → JWKS → signature/issuer/audience checks via go-oidc). Issuance is OAuth 2.0; validation is OIDC-flavored. Don't read `OIDC_` in a variable name as "we use id_tokens" — we don't.
 - **`POST /auth/device/poll` sends `device_code` in the JSON body** — not as a query parameter. Query params appear in application logs, proxy logs, and browser history. `device_code` is a short-lived credential. Handler uses `c.Bind()`. Route is `POST`, not `GET`.
 - **Orbital does not model PIM (Privileged Identity Management) or any other elevation scheme** — it enforces `readonly < dev < admin` on whatever identity the token carries, full stop. PIM elevation is an IdP concern: the IdP grants a write-role token, orbital checks the role via `RequireRole`. Do NOT add PIM sessions, elevation windows, or approval state to orbital; a multi-writer client (AEP) layers that on top. Corollary: a client's "approval workflow" is satisfied by orbital's existing gates (role on write + `expectedContentHash` on publish) — see `OCI.md` § "Guarded Apply".
@@ -37,26 +38,51 @@ User identity and per-user audit are hard requirements for orbital. That require
 - Sessions use gorilla/sessions cookie store with HMAC-SHA256 (`ORBITAL_SESSION_HMAC_KEY`) and AES-256 (`ORBITAL_SESSION_ENCRYPTION_KEY`).
 - **Session encryption key must be exactly 32 bytes** — gorilla/sessions silently fails to decode sessions with the wrong key length. Orbital validates this at startup and refuses to start if misconfigured.
 - Local login: email/password against PostgreSQL `users` table, bcrypt cost 12. Always available for dev.
-- OIDC/SSO: Azure AD via OpenID Connect. Enabled when `ORBITAL_OIDC_ISSUER_URL` and `ORBITAL_OIDC_CLIENT_SECRET` are both set. Disabled with a startup warning if the secret is missing.
+- ~~OIDC/SSO: Azure AD via OpenID Connect. Enabled when `ORBITAL_OIDC_ISSUER_URL` and `ORBITAL_OIDC_CLIENT_SECRET` are both set. Disabled with a startup warning if the secret is missing.~~ **Superseded.** `ORBITAL_OIDC_ISSUER_URL`/`ORBITAL_OIDC_CLIENT_SECRET` (Azure AD) no longer drive the browser login button — they now configure API bearer-token validation only (see § Bearer token validation). Browser OIDC/SSO is Keycloak via `ORBITAL_WEBLOGIN_OIDC_ISSUER_URL` + `ORBITAL_WEBLOGIN_OIDC_CLIENT_SECRET` — see § Keycloak web login below.
 
-## Device code browser SSO
+## ~~Device code browser SSO~~ (superseded — see § Keycloak web login)
 
-Activated by `ORBITAL_OAUTH2_DEVICE_CODE=true`. The login modal shows a "Sign in with Microsoft" button that uses the device code flow instead of the standard Authorization Code redirect.
+~~Activated by `ORBITAL_OAUTH2_DEVICE_CODE=true`. The login modal shows a "Sign in with Microsoft" button that uses the device code flow instead of the standard Authorization Code redirect.~~
 
-**Why device code for browser SSO** (not Authorization Code + PKCE):
+**Why device code for browser SSO** (not Authorization Code + PKCE) — kept for historical context, since the same reasoning explains why Keycloak *doesn't* need it:
 
 - **Azure AD private DNS limitation** — Orbital runs behind an Internal Load Balancer in AKS and uses private DNS names (e.g. `orbital.devnew.armada.internal`) that only resolve on the VPN. Azure AD's Authorization Code flow requires a redirect URI that Azure AD can validate — a private DNS name either fails registration or silently misdirects. Device code has no redirect URI at all.
 - **No HTTPS requirement** — Authorization Code + PKCE requires the redirect URI to be an HTTPS endpoint registered with Azure AD. Orbital's Go server receives plain HTTP (TLS is terminated at the Istio ingress layer). Device code needs no redirect URI, so TLS on the server process is irrelevant to the OAuth handshake.
 - **No App Roles available** — We don't have Application Administrator permissions on the Azure AD tenant, so we can't create custom App Roles. This ruled out JWT claim-based authz regardless of flow. Authorization is enforced via the local `role` column on the `users` table (see Authorization section below).
 
-**Endpoints:**
-- `GET /auth/device` — initiates the flow, returns `device_code`, `user_code`, `verification_uri`, `verification_uri_complete`
-- `GET /auth/device/poll` — polls the token endpoint; returns 202 (pending), 200 (complete, sets session), or 4xx (error)
-- Standalone page rendered at `/auth/device`; includes JS poller
+~~**Endpoints:**~~
+- ~~`GET /auth/device` — initiates the flow, returns `device_code`, `user_code`, `verification_uri`, `verification_uri_complete`~~
+- ~~`GET /auth/device/poll` — polls the token endpoint; returns 202 (pending), 200 (complete, sets session), or 4xx (error)~~
+- ~~Standalone page rendered at `/auth/device`; includes JS poller~~
 
-**Auto-open variant** — On page load the JS poller immediately opens `verification_uri_complete` (which embeds the user_code) in a new tab. This eliminates the manual copy-paste UX of classic IoT device code flows. The original tab continues polling and redirects when the token arrives. A fallback manual link is shown if the popup is blocked.
+No longer routed as of the Keycloak web-login change — `internal/handler/oidc.go`'s `DeviceCodeStart`/`DeviceCodePoll` still exist but are unreachable; `web/templates/orbital/pages/device-code.gohtml` and the `initDeviceCodePoller`/`initDeviceCodeCopy` JS in `shared.js` are likewise dead but left in place.
 
-**orbctl uses Authorization Code + PKCE (not device code)** — the CLI runs on the user's local machine, can open a browser directly, and can bind a local redirect server on a random port. It doesn't have the private DNS / redirect URI problem. Conditional Access policies that block device code flows apply to orbctl, not to the orbital web server.
+~~**Auto-open variant** — On page load the JS poller immediately opens `verification_uri_complete` (which embeds the user_code) in a new tab. This eliminates the manual copy-paste UX of classic IoT device code flows. The original tab continues polling and redirects when the token arrives. A fallback manual link is shown if the popup is blocked.~~
+
+**orbctl uses Authorization Code + PKCE (not device code)** — the CLI runs on the user's local machine, can open a browser directly, and can bind a local redirect server on a random port. It doesn't have the private DNS / redirect URI problem. Conditional Access policies that block device code flows apply to orbctl, not to the orbital web server. **Unaffected by the Keycloak web-login change** — orbctl still authenticates against Azure AD via `internal/orbauth/`, untouched.
+
+## Keycloak web login (browser SSO)
+
+Orbital's own login page offers local email/password (unchanged) and a "Sign in with Keycloak" button, backed by the same shared Keycloak realm AEP's `aep-fleet-commander` client uses (see § External JWT mode above for the API-side counterpart of that integration).
+
+**Config:**
+
+| Var | Purpose |
+|---|---|
+| `ORBITAL_WEBLOGIN_OIDC_ISSUER_URL` | The Keycloak realm issuer URL (discovery via `/.well-known/openid-configuration`, same as `ORBITAL_OIDC_ISSUER_URL`'s mechanism). |
+| `ORBITAL_WEBLOGIN_OIDC_CLIENT_ID` | Orbital's own registered Keycloak client id. |
+| `ORBITAL_WEBLOGIN_OIDC_CLIENT_SECRET` | That client's secret (confidential client). Login button is hidden with a startup warning if unset, mirroring `ORBITAL_OIDC_CLIENT_SECRET`'s behavior. |
+| `ORBITAL_WEBLOGIN_OIDC_REDIRECT_URL` | Orbital's own callback URL, must exactly match what's registered on the Keycloak client. |
+
+**Flow:** standard OAuth2 Authorization Code redirect (not device code, not PKCE — confidential client with a client secret). Reuses the same `handler.OIDC.Login`/`Callback` code that previously served Azure AD — that code was already IdP-agnostic (plain go-oidc discovery, standard `email`/`name`/`preferred_username` claims), so no logic changes were needed, only which config values it's constructed with.
+
+**Endpoints:** `GET /auth/login` (redirects to Keycloak), `GET /auth/callback` (exchanges the code, verifies the ID token, provisions/looks up the user, sets the session). Same paths used for Azure AD before — only the provider instance behind them changed.
+
+**Why no redirect-URI restriction like Azure AD had:** Keycloak here is a self-hosted, admin-controlled realm (in-cluster, `keycloak.keycloak` namespace) — the realm admin can register any redirect URI, including a private-DNS one, with no portal-side reachability validation. That's the AAD-specific restriction device code existed to work around (see above); it doesn't apply here.
+
+**Prerequisite outside this codebase:** a Keycloak realm admin must register a client (e.g. `orbital`) with a redirect URI of `<orbital-host>/auth/callback` before this button will work end-to-end.
+
+**Provisioning is identical to the old Azure AD flow:** first login by a given email auto-provisions a `users` row (`role: readonly` by default), promoted to `admin` if the email is in `ORBITAL_ADMIN_EMAILS`. See § Authorization.
 
 ## Bearer token validation
 

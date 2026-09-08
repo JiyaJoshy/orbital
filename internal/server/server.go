@@ -131,6 +131,10 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 		Logger:         logger,
 		SkipPrefixes:   []string{"/static/"},
 		SkipExactPaths: []string{"/favicon.ico", "/healthz"},
+		// /auth/device/poll is no longer a registered route (Keycloak login
+		// retired device-code), so this entry is now a no-op. Left in place
+		// rather than removed, in case device-code is reintroduced for a
+		// future deployment.
 		SkipSuffixes:   []string{"/auth/device/poll"},
 		ActorFromContext: func(c echo.Context) string {
 			actor, _ := c.Get("user_email").(string)
@@ -142,6 +146,14 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 	oidcEnabled := cfg.OIDCIssuerURL != "" && cfg.OIDCClientSecret != ""
 	if cfg.OIDCIssuerURL != "" && cfg.OIDCClientSecret == "" {
 		logger.Warn("ORBITAL_OIDC_CLIENT_SECRET is not set — SSO login disabled")
+	}
+	// webLoginEnabled gates the browser SSO button on orbital's own login page
+	// (now Keycloak). Kept separate from oidcEnabled above: that variable also
+	// drives the AAD bearer-verifier / production-auth guard below, which must
+	// stay pointed at Azure AD for orbctl and third-party AAD API clients.
+	webLoginEnabled := cfg.WebLoginOIDCIssuerURL != "" && cfg.WebLoginOIDCClientSecret != ""
+	if cfg.WebLoginOIDCIssuerURL != "" && cfg.WebLoginOIDCClientSecret == "" {
+		logger.Warn("ORBITAL_WEBLOGIN_OIDC_CLIENT_SECRET is not set — Keycloak login disabled")
 	}
 
 	root := e.Group(cfg.BasePath)
@@ -288,7 +300,8 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 		logger.Warn("OCI publishing not configured (ORBITAL_OCI_REGISTRY and ORBITAL_OCI_SIGNING_KEY_PATH) — publish disabled")
 	}
 
-	ui := handler.NewUI(cfg.Dev, cfg.RatelURL, cfg.IssueTrackerURL, oidcEnabled, cfg.OAuth2DeviceCode, s3Configured, cfg.S3Endpoint, cfg.S3Bucket, cfg.BasePath, db, logger)
+	// ui := handler.NewUI(cfg.Dev, cfg.RatelURL, cfg.IssueTrackerURL, oidcEnabled, cfg.OAuth2DeviceCode, s3Configured, cfg.S3Endpoint, cfg.S3Bucket, cfg.BasePath, db, logger)
+	ui := handler.NewUI(cfg.Dev, cfg.RatelURL, cfg.IssueTrackerURL, webLoginEnabled, false, s3Configured, cfg.S3Endpoint, cfg.S3Bucket, cfg.BasePath, db, logger)
 	ui.SetOCIConfig(ociConfigured, cfg.OCIRegistry, cfg.OCIRepo)
 	ui.SetExportDir(cfg.ExportDir)
 	ui.SetSchemaPath(cfg.SchemaPath)
@@ -346,29 +359,39 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 		}
 		root.POST("/user/logout", login.Logout)
 
-		if oidcEnabled {
+		// if oidcEnabled {
+		if webLoginEnabled {
 			oidc, err := handler.NewOIDC(
 				context.Background(),
 				db,
 				cfg.SessionKeys(),
-				cfg.OIDCIssuerURL,
-				cfg.OIDCClientID,
-				cfg.OIDCClientSecret,
-				cfg.OIDCRedirectURL,
+				// cfg.OIDCIssuerURL,
+				cfg.WebLoginOIDCIssuerURL,
+				// cfg.OIDCClientID,
+				cfg.WebLoginOIDCClientID,
+				// cfg.OIDCClientSecret,
+				cfg.WebLoginOIDCClientSecret,
+				// cfg.OIDCRedirectURL,
+				cfg.WebLoginOIDCRedirectURL,
 				cfg.BasePath,
 				logger,
 				cfg.AdminEmailSet(),
-				cfg.OAuth2DeviceCode,
+				// cfg.OAuth2DeviceCode,
+				false, // Keycloak uses a standard redirect; device code was only ever needed to work around Azure AD's redirect-URI validation.
 			)
 			if err != nil {
 				logger.Error("oidc provider init failed", "err", err)
 			} else {
 				root.GET("/auth/login", oidc.Login)
 				root.GET("/auth/callback", oidc.Callback)
-				if cfg.OAuth2DeviceCode {
-					root.GET("/auth/device", oidc.DeviceCodeStart)
-					root.POST("/auth/device/poll", oidc.DeviceCodePoll)
-				}
+				// Device-code endpoints retired along with the Microsoft login
+				// option. DeviceCodeStart/DeviceCodePoll still exist in oidc.go
+				// but are no longer routed, so they're unreachable rather than
+				// deleted.
+				// if cfg.OAuth2DeviceCode {
+				// 	root.GET("/auth/device", oidc.DeviceCodeStart)
+				// 	root.POST("/auth/device/poll", oidc.DeviceCodePoll)
+				// }
 			}
 		}
 	}

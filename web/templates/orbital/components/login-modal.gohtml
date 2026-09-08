@@ -10,6 +10,7 @@
       </p>
 
     {{if .OIDCEnabled}}
+    {{/*
     {{if .DeviceCodeEnabled}}
     <a href="{{.BasePath}}/auth/device" class="button is-fullwidth mb-4" style="gap: 0.5rem;">
       <span class="icon">
@@ -25,6 +26,11 @@
       <span>Sign in with Microsoft</span>
     </a>
     {{end}}
+    */}}
+    <a href="{{.BasePath}}/auth/login" class="button is-fullwidth mb-4" style="gap: 0.5rem;">
+      <span class="icon"><i class="fa-solid fa-key"></i></span>
+      <span>Sign in with Keycloak</span>
+    </a>
     <div class="is-divider" data-content="OR"></div>
     {{end}}
 
