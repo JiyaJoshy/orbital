@@ -300,7 +300,6 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 		logger.Warn("OCI publishing not configured (ORBITAL_OCI_REGISTRY and ORBITAL_OCI_SIGNING_KEY_PATH) — publish disabled")
 	}
 
-	// ui := handler.NewUI(cfg.Dev, cfg.RatelURL, cfg.IssueTrackerURL, oidcEnabled, cfg.OAuth2DeviceCode, s3Configured, cfg.S3Endpoint, cfg.S3Bucket, cfg.BasePath, db, logger)
 	ui := handler.NewUI(cfg.Dev, cfg.RatelURL, cfg.IssueTrackerURL, webLoginEnabled, false, s3Configured, cfg.S3Endpoint, cfg.S3Bucket, cfg.BasePath, db, logger)
 	ui.SetOCIConfig(ociConfigured, cfg.OCIRegistry, cfg.OCIRepo)
 	ui.SetExportDir(cfg.ExportDir)
@@ -359,24 +358,18 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 		}
 		root.POST("/user/logout", login.Logout)
 
-		// if oidcEnabled {
 		if webLoginEnabled {
 			oidc, err := handler.NewOIDC(
 				context.Background(),
 				db,
 				cfg.SessionKeys(),
-				// cfg.OIDCIssuerURL,
 				cfg.WebLoginOIDCIssuerURL,
-				// cfg.OIDCClientID,
 				cfg.WebLoginOIDCClientID,
-				// cfg.OIDCClientSecret,
 				cfg.WebLoginOIDCClientSecret,
-				// cfg.OIDCRedirectURL,
 				cfg.WebLoginOIDCRedirectURL,
 				cfg.BasePath,
 				logger,
 				cfg.AdminEmailSet(),
-				// cfg.OAuth2DeviceCode,
 				false, // Keycloak uses a standard redirect; device code was only ever needed to work around Azure AD's redirect-URI validation.
 			)
 			if err != nil {
@@ -388,10 +381,6 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 				// option. DeviceCodeStart/DeviceCodePoll still exist in oidc.go
 				// but are no longer routed, so they're unreachable rather than
 				// deleted.
-				// if cfg.OAuth2DeviceCode {
-				// 	root.GET("/auth/device", oidc.DeviceCodeStart)
-				// 	root.POST("/auth/device/poll", oidc.DeviceCodePoll)
-				// }
 			}
 		}
 	}
