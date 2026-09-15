@@ -24,14 +24,11 @@ type Config struct {
 	// Rate limiting (audit S.12). Opt-in — OFF by default so local dev, e2e,
 	// and the AKS-dev smoke suite are never throttled; production enables it
 	// with ORBITAL_RATE_LIMIT_ENABLED=true. Per-IP token buckets, in-memory
-	// (orbital runs single-replica — see ROADMAP HA note). RateLimitRPS is the
-	// sustained per-IP request/sec for the whole surface; LoginRateLimitRPS is
-	// a tighter bucket on POST /user/login to slow credential brute-force.
-	// Burst = 2×RPS. Behind a proxy, per-IP fairness needs c.RealIP() to
-	// resolve the true client via X-Forwarded-For (Istio sets it).
+	// (orbital runs single-replica — see ROADMAP HA note). Burst = 2×RPS.
+	// Behind a proxy, per-IP fairness needs c.RealIP() to resolve the true
+	// client via X-Forwarded-For (Istio sets it).
 	RateLimitEnabled      bool   `envconfig:"ORBITAL_RATE_LIMIT_ENABLED"   default:"false"`
 	RateLimitRPS          int    `envconfig:"ORBITAL_RATE_LIMIT_RPS"       default:"40"`
-	LoginRateLimitRPS     int    `envconfig:"ORBITAL_LOGIN_RATE_LIMIT_RPS" default:"5"`
 	DGraphURL             string `envconfig:"DGRAPH_URL"                      default:"http://localhost:8080/graphql"`
 	DGraphAdminURL        string `envconfig:"DGRAPH_ADMIN_URL"                default:"http://localhost:8080/admin"`
 	RatelURL              string `envconfig:"RATEL_URL"                       default:"http://localhost:8000"`
@@ -108,18 +105,25 @@ type Config struct {
 	// policy administration writes PostgreSQL, never DGraph, so it is never
 	// itself gated.
 	ChangeControlEnabled bool `envconfig:"ORBITAL_CHANGE_CONTROL_ENABLED" default:"true"`
-	// OIDCIssuerURL defaults to the Azure AD tenant URL so the SSO login button
-	// is available in `make run-orbital` for daily UI work (provided the user
-	// also sets ORBITAL_OIDC_CLIENT_SECRET). In dev mode (ORBITAL_DEV=true),
-	// bearer auth on /api/v1 + /graphql is bypassed at the middleware layer
-	// (see internal/server/server.go), so machine-to-machine callers like
+	// OIDCIssuerURL/OIDCClientID back the AAD bearer verifier only (API auth for
+	// orbctl and third-party AAD clients on /api/v1 + /graphql) — NOT browser
+	// login, which is Keycloak-via-armada-organization-svc only (see
+	// WebLoginOIDCIssuerURL/OrganizationSvcURL below). In dev mode
+	// (ORBITAL_DEV=true), bearer auth is bypassed at the middleware layer (see
+	// internal/server/server.go), so machine-to-machine callers like
 	// cb-bundler can query without an OAuth2 token. Production (Dev=false)
 	// enforces bearer auth strictly.
-	OIDCIssuerURL    string `envconfig:"ORBITAL_OIDC_ISSUER_URL"         default:"https://login.microsoftonline.com/8f231c2a-9551-4b40-be17-5b24afe5e890/v2.0"`
-	OIDCClientID     string `envconfig:"ORBITAL_OIDC_CLIENT_ID"          default:"5fc832f6-843e-4207-93dd-b3c3a77c06f2"`
-	OIDCClientSecret string `envconfig:"ORBITAL_OIDC_CLIENT_SECRET"      default:""`
-	OIDCRedirectURL  string `envconfig:"ORBITAL_OIDC_REDIRECT_URL"       default:"http://localhost:8001/auth/callback"`
-	OAuth2DeviceCode bool   `envconfig:"ORBITAL_OAUTH2_DEVICE_CODE"      default:"true"` // enables device code flow for browser SSO; set false to use Authorization Code + PKCE (requires publicly resolvable redirect URI). RFC 8628 — OAuth 2.0, not OIDC despite living next to ORBITAL_OIDC_* settings.
+	OIDCIssuerURL string `envconfig:"ORBITAL_OIDC_ISSUER_URL" default:"https://login.microsoftonline.com/8f231c2a-9551-4b40-be17-5b24afe5e890/v2.0"`
+	OIDCClientID  string `envconfig:"ORBITAL_OIDC_CLIENT_ID"  default:"5fc832f6-843e-4207-93dd-b3c3a77c06f2"`
+	// WebLoginOIDCIssuerURL / WebLoginOIDCRedirectURL configure orbital's
+	// browser login. Login is Keycloak-only, routed through
+	// armada-organization-svc (OrganizationSvcURL) — orbital holds no
+	// Keycloak client id/secret of its own and does not implement direct
+	// Keycloak or Azure AD device-code login. No defaults; the login button
+	// stays hidden until both are set.
+	WebLoginOIDCIssuerURL   string `envconfig:"ORBITAL_WEBLOGIN_OIDC_ISSUER_URL"   default:""`
+	WebLoginOIDCRedirectURL string `envconfig:"ORBITAL_WEBLOGIN_OIDC_REDIRECT_URL" default:""`
+	OrganizationSvcURL      string `envconfig:"ORBITAL_ORGANIZATION_SVC_URL"       default:""`
 	// AppTokenAllowedAppIDs gates which app-only (client-credentials) bearer
 	// tokens orbital accepts on /api/v1 and /graphql. Defaults to allowing
 	// only the orbital app itself (in-pod cb-bundler authenticates as the

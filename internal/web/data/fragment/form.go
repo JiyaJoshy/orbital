@@ -1,11 +1,5 @@
 package fragment
 
-type LoginForm struct {
-	CsrfToken string
-	ErrorMsg  string
-	BasePath  string
-}
-
 type Form struct {
 	IsSuccess bool
 	FieldsMap map[string]*Field

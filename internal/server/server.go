@@ -23,7 +23,6 @@ import (
 	"github.com/armada/orbital/internal/oci"
 	appversion "github.com/armada/orbital/internal/version"
 	"github.com/armada/orbital/internal/web/data/layout"
-	webtemplates "github.com/armada/orbital/web/templates/orbital"
 	retryablehttp "github.com/hashicorp/go-retryablehttp"
 	"github.com/labstack/echo/v4"
 	echomw "github.com/labstack/echo/v4/middleware"
@@ -67,23 +66,11 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 	// production enables it explicitly. Per-IP token buckets, in-memory
 	// (orbital is single-replica). Denials return a 429 that the central
 	// ErrorHandler renders as the standard envelope (code RATE_LIMITED), with a
-	// Retry-After header. A tighter bucket is attached to POST /user/login
-	// below to slow credential brute-force. loginRateLimiter stays nil (and the
-	// login route registers without it) when the feature is off.
-	var loginRateLimiter echo.MiddlewareFunc
+	// Retry-After header.
 	if cfg.RateLimitEnabled {
 		denyHandler := func(c echo.Context, _ string, _ error) error {
 			c.Response().Header().Set("Retry-After", "1")
 			return echo.NewHTTPError(http.StatusTooManyRequests, "rate limit exceeded — too many requests; retry after a moment")
-		}
-		newLimiter := func(rps int) echo.MiddlewareFunc {
-			return echomw.RateLimiterWithConfig(echomw.RateLimiterConfig{
-				Store: echomw.NewRateLimiterMemoryStoreWithConfig(echomw.RateLimiterMemoryStoreConfig{
-					Rate:  rate.Limit(rps),
-					Burst: rps * 2,
-				}),
-				DenyHandler: denyHandler,
-			})
 		}
 		// General per-IP limiter for the whole surface, skipping the Prometheus
 		// scrape endpoint, K8s probe, and static assets so scrapers/probes are
@@ -99,8 +86,7 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 				return p == "/healthz" || p == "/metrics" || strings.HasPrefix(p, cfg.BasePath+"/static/")
 			},
 		}))
-		loginRateLimiter = newLimiter(cfg.LoginRateLimitRPS)
-		logger.Info("rate limiting enabled", "general_rps", cfg.RateLimitRPS, "login_rps", cfg.LoginRateLimitRPS)
+		logger.Info("rate limiting enabled", "general_rps", cfg.RateLimitRPS)
 	}
 	e.GET("/metrics", metrics.Handler())
 	e.GET("/healthz", func(c echo.Context) error {
@@ -131,7 +117,6 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 		Logger:         logger,
 		SkipPrefixes:   []string{"/static/"},
 		SkipExactPaths: []string{"/favicon.ico", "/healthz"},
-		SkipSuffixes:   []string{"/auth/device/poll"},
 		ActorFromContext: func(c echo.Context) string {
 			actor, _ := c.Get("user_email").(string)
 			return actor
@@ -139,10 +124,13 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 	}))
 
 	externalJWTMode := cfg.AuthMode == "external-jwt"
-	oidcEnabled := cfg.OIDCIssuerURL != "" && cfg.OIDCClientSecret != ""
-	if cfg.OIDCIssuerURL != "" && cfg.OIDCClientSecret == "" {
-		logger.Warn("ORBITAL_OIDC_CLIENT_SECRET is not set — SSO login disabled")
-	}
+	// orgSvcLoginEnabled gates the Keycloak browser-login button, routed
+	// through armada-organization-svc — orbital holds no Keycloak client
+	// id/secret of its own and does not implement direct Keycloak or AAD
+	// device-code browser login. Separate from cfg.OIDCIssuerURL below, which
+	// only backs the AAD bearer verifier (API auth for orbctl / third-party
+	// AAD clients) now.
+	orgSvcLoginEnabled := cfg.WebLoginOIDCIssuerURL != "" && cfg.OrganizationSvcURL != ""
 
 	root := e.Group(cfg.BasePath)
 
@@ -155,8 +143,8 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 	//     accept a bearer signed by ORBITAL_JWT_ISSUER (assigned
 	//     ORBITAL_JWT_DEFAULT_ROLE via context) OR a session cookie (role
 	//     resolved from the DB). The session fallback keeps orbital's own UI
-	//     usable — humans sign in via local/OIDC login; AEP's proxied calls
-	//     carry a bearer. Login routes stay registered (oidcEnabled unchanged).
+	//     usable — humans sign in via Keycloak; AEP's proxied calls carry a
+	//     bearer. Login routes stay registered (orgSvcLoginEnabled unchanged).
 	//     See AUTH.md § External JWT mode.
 	//   - Dev (cfg.Dev=true): apiAuth stays empty so machine-to-machine
 	//     callers like cb-bundler can query /graphql plain-HTTP. Session
@@ -227,7 +215,7 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 	switch {
 	case externalJWTMode:
 		authMode = "external-jwt"
-	case !oidcEnabled:
+	case cfg.OIDCIssuerURL == "":
 		authMode = "none"
 	}
 	if len(apiAuth) == 0 {
@@ -288,7 +276,7 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 		logger.Warn("OCI publishing not configured (ORBITAL_OCI_REGISTRY and ORBITAL_OCI_SIGNING_KEY_PATH) — publish disabled")
 	}
 
-	ui := handler.NewUI(cfg.Dev, cfg.RatelURL, cfg.IssueTrackerURL, oidcEnabled, cfg.OAuth2DeviceCode, s3Configured, cfg.S3Endpoint, cfg.S3Bucket, cfg.BasePath, db, logger)
+	ui := handler.NewUI(cfg.Dev, cfg.RatelURL, cfg.IssueTrackerURL, orgSvcLoginEnabled, s3Configured, cfg.S3Endpoint, cfg.S3Bucket, cfg.BasePath, db, logger)
 	ui.SetOCIConfig(ociConfigured, cfg.OCIRegistry, cfg.OCIRepo)
 	ui.SetExportDir(cfg.ExportDir)
 	ui.SetSchemaPath(cfg.SchemaPath)
@@ -338,37 +326,28 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 	var divHandler *handler.DivergenceHandler
 
 	if db != nil {
-		login := handler.NewLogin(db, cfg.SessionKeys(), webtemplates.LoginForm(), cfg.BasePath, logger)
-		if loginRateLimiter != nil {
-			root.POST("/user/login", login.Post, loginRateLimiter)
-		} else {
-			root.POST("/user/login", login.Post)
-		}
+		login := handler.NewLogin(db, cfg.SessionKeys(), cfg.BasePath, logger)
 		root.POST("/user/logout", login.Logout)
 
-		if oidcEnabled {
-			oidc, err := handler.NewOIDC(
+		if orgSvcLoginEnabled {
+			// Keycloak browser login routed through armada-organization-svc —
+			// see docs/reference/AUTH.md § Keycloak web login.
+			orgSvcOIDC, err := handler.NewOrgSvcOIDC(
 				context.Background(),
 				db,
 				cfg.SessionKeys(),
-				cfg.OIDCIssuerURL,
-				cfg.OIDCClientID,
-				cfg.OIDCClientSecret,
-				cfg.OIDCRedirectURL,
+				cfg.WebLoginOIDCIssuerURL,
+				cfg.OrganizationSvcURL,
+				cfg.WebLoginOIDCRedirectURL,
 				cfg.BasePath,
 				logger,
 				cfg.AdminEmailSet(),
-				cfg.OAuth2DeviceCode,
 			)
 			if err != nil {
-				logger.Error("oidc provider init failed", "err", err)
+				logger.Error("org-svc oidc provider init failed", "err", err)
 			} else {
-				root.GET("/auth/login", oidc.Login)
-				root.GET("/auth/callback", oidc.Callback)
-				if cfg.OAuth2DeviceCode {
-					root.GET("/auth/device", oidc.DeviceCodeStart)
-					root.POST("/auth/device/poll", oidc.DeviceCodePoll)
-				}
+				root.GET("/auth/login", orgSvcOIDC.Login)
+				root.GET("/auth/callback", orgSvcOIDC.Callback)
 			}
 		}
 	}
