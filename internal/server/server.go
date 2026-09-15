@@ -143,6 +143,14 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 	if cfg.OIDCIssuerURL != "" && cfg.OIDCClientSecret == "" {
 		logger.Warn("ORBITAL_OIDC_CLIENT_SECRET is not set — SSO login disabled")
 	}
+	// webLoginEnabled gates the Keycloak browser-login button, routed through
+	// armada-organization-svc (see internal/handler/orgsvc_oidc.go). Separate
+	// from oidcEnabled above, which still drives the AAD bearer-verifier /
+	// device-code flow — when both are set, the Keycloak/org-svc route takes
+	// the browser-facing /auth/login and /auth/callback routes, since a
+	// deployment testing this shouldn't also have the AAD device-code UI
+	// fighting it for the same paths.
+	webLoginEnabled := cfg.WebLoginOIDCIssuerURL != "" && cfg.OrganizationSvcURL != ""
 
 	root := e.Group(cfg.BasePath)
 
@@ -288,7 +296,7 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 		logger.Warn("OCI publishing not configured (ORBITAL_OCI_REGISTRY and ORBITAL_OCI_SIGNING_KEY_PATH) — publish disabled")
 	}
 
-	ui := handler.NewUI(cfg.Dev, cfg.RatelURL, cfg.IssueTrackerURL, oidcEnabled, cfg.OAuth2DeviceCode, s3Configured, cfg.S3Endpoint, cfg.S3Bucket, cfg.BasePath, db, logger)
+	ui := handler.NewUI(cfg.Dev, cfg.RatelURL, cfg.IssueTrackerURL, oidcEnabled, !webLoginEnabled && cfg.OAuth2DeviceCode, webLoginEnabled, s3Configured, cfg.S3Endpoint, cfg.S3Bucket, cfg.BasePath, db, logger)
 	ui.SetOCIConfig(ociConfigured, cfg.OCIRegistry, cfg.OCIRepo)
 	ui.SetExportDir(cfg.ExportDir)
 	ui.SetSchemaPath(cfg.SchemaPath)
@@ -346,7 +354,28 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 		}
 		root.POST("/user/logout", login.Logout)
 
-		if oidcEnabled {
+		switch {
+		case webLoginEnabled:
+			// Keycloak browser login routed through armada-organization-svc —
+			// see docs/reference/AUTH.md § Keycloak web login (org-svc).
+			orgSvcOIDC, err := handler.NewOrgSvcOIDC(
+				context.Background(),
+				db,
+				cfg.SessionKeys(),
+				cfg.WebLoginOIDCIssuerURL,
+				cfg.OrganizationSvcURL,
+				cfg.WebLoginOIDCRedirectURL,
+				cfg.BasePath,
+				logger,
+				cfg.AdminEmailSet(),
+			)
+			if err != nil {
+				logger.Error("org-svc oidc provider init failed", "err", err)
+			} else {
+				root.GET("/auth/login", orgSvcOIDC.Login)
+				root.GET("/auth/callback", orgSvcOIDC.Callback)
+			}
+		case oidcEnabled:
 			oidc, err := handler.NewOIDC(
 				context.Background(),
 				db,

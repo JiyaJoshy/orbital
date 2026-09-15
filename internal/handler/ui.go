@@ -33,6 +33,7 @@ type UI struct {
 	issueTrackerURL   string
 	oidcEnabled       bool
 	deviceCodeEnabled bool
+	webLoginEnabled   bool
 	backupEnabled     bool
 	backupCronSpec    string
 	s3Endpoint        string
@@ -51,7 +52,7 @@ type UI struct {
 	templates         map[string]*template.Template
 }
 
-func NewUI(dev bool, ratelURL, issueTrackerURL string, oidcEnabled, deviceCodeEnabled, backupEnabled bool, s3Endpoint, s3Bucket string, basePath string, db *ent.Client, logger *slog.Logger) *UI {
+func NewUI(dev bool, ratelURL, issueTrackerURL string, oidcEnabled, deviceCodeEnabled, webLoginEnabled, backupEnabled bool, s3Endpoint, s3Bucket string, basePath string, db *ent.Client, logger *slog.Logger) *UI {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -61,6 +62,7 @@ func NewUI(dev bool, ratelURL, issueTrackerURL string, oidcEnabled, deviceCodeEn
 		issueTrackerURL:   issueTrackerURL,
 		oidcEnabled:       oidcEnabled,
 		deviceCodeEnabled: deviceCodeEnabled,
+		webLoginEnabled:   webLoginEnabled,
 		backupEnabled:     backupEnabled,
 		s3Endpoint:        s3Endpoint,
 		s3Bucket:          s3Bucket,
@@ -199,6 +201,7 @@ func (h *UI) base(c echo.Context) layout.Base {
 		IsAuthn:            isAuthn,
 		OIDCEnabled:        h.oidcEnabled,
 		DeviceCodeEnabled:  h.deviceCodeEnabled,
+		WebLoginEnabled:    h.webLoginEnabled,
 		User:               layout.User{Id: userID, Name: userName, Email: userEmail, Role: userRole},
 		CanMutate:          canMutate,
 		AdminEmails:        adminEmails,

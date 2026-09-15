@@ -120,6 +120,21 @@ type Config struct {
 	OIDCClientSecret string `envconfig:"ORBITAL_OIDC_CLIENT_SECRET"      default:""`
 	OIDCRedirectURL  string `envconfig:"ORBITAL_OIDC_REDIRECT_URL"       default:"http://localhost:8001/auth/callback"`
 	OAuth2DeviceCode bool   `envconfig:"ORBITAL_OAUTH2_DEVICE_CODE"      default:"true"` // enables device code flow for browser SSO; set false to use Authorization Code + PKCE (requires publicly resolvable redirect URI). RFC 8628 — OAuth 2.0, not OIDC despite living next to ORBITAL_OIDC_* settings.
+	// WebLoginOIDCIssuerURL / WebLoginOIDCRedirectURL configure the Keycloak
+	// browser-login button, routed through armada-organization-svc rather than
+	// talking to Keycloak directly. Kept separate from OIDCIssuerURL above
+	// (AAD-only, used by the bearer verifier and orbctl) for the same reason
+	// as OIDCIssuerURL itself — merging them would break AAD auth.
+	// No client ID/secret here: orbital doesn't hold Keycloak credentials in
+	// this flow, armada-organization-svc's shared client does.
+	WebLoginOIDCIssuerURL   string `envconfig:"ORBITAL_WEBLOGIN_OIDC_ISSUER_URL"   default:""`
+	WebLoginOIDCRedirectURL string `envconfig:"ORBITAL_WEBLOGIN_OIDC_REDIRECT_URL" default:""`
+	// OrganizationSvcURL is armada-organization-svc's base URL. Orbital's
+	// login/callback handlers call its /api/v1/login/sso and
+	// /api/v1/login/token/sso endpoints instead of talking to Keycloak
+	// directly. Empty by default — the Keycloak login button stays hidden
+	// until an operator sets this and WebLoginOIDCIssuerURL.
+	OrganizationSvcURL string `envconfig:"ORBITAL_ORGANIZATION_SVC_URL" default:""`
 	// AppTokenAllowedAppIDs gates which app-only (client-credentials) bearer
 	// tokens orbital accepts on /api/v1 and /graphql. Defaults to allowing
 	// only the orbital app itself (in-pod cb-bundler authenticates as the

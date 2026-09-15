@@ -14,6 +14,7 @@ type Base struct {
 	IsAuthn           bool
 	OIDCEnabled       bool
 	DeviceCodeEnabled bool
+	WebLoginEnabled   bool // Keycloak browser login routed through armada-organization-svc; distinct from OIDCEnabled (AAD)
 	CsrfToken         string
 	AppVersion        string
 	BasePath          string

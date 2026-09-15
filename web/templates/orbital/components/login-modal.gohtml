@@ -9,7 +9,13 @@
         </span>
       </p>
 
-    {{if .OIDCEnabled}}
+    {{if .WebLoginEnabled}}
+    <button type="button" id="btn-keycloak-login" class="button is-fullwidth mb-4" style="gap: 0.5rem;">
+      <span class="icon"><i class="fa-solid fa-key"></i></span>
+      <span>Sign in with Keycloak</span>
+    </button>
+    <div class="is-divider" data-content="OR"></div>
+    {{else if .OIDCEnabled}}
     {{if .DeviceCodeEnabled}}
     <a href="{{.BasePath}}/auth/device" class="button is-fullwidth mb-4" style="gap: 0.5rem;">
       <span class="icon">
@@ -92,6 +98,19 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    const keycloakBtn = document.getElementById('btn-keycloak-login');
+    if (keycloakBtn) {
+      keycloakBtn.addEventListener('click', () => {
+        const emailInput = document.querySelector('#form-login [name="email"]');
+        const email = emailInput ? emailInput.value.trim() : '';
+        if (!email) {
+          if (emailInput) emailInput.focus();
+          return;
+        }
+        window.location.href = '{{.BasePath}}/auth/login?email=' + encodeURIComponent(email);
+      });
+    }
+
     (document.querySelectorAll('.js-modal-trigger') || []).forEach((trigger) => {
       const modalId = trigger.dataset.target;
       const $target = document.getElementById(modalId);
