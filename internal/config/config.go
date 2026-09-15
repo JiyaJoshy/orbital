@@ -24,11 +24,14 @@ type Config struct {
 	// Rate limiting (audit S.12). Opt-in — OFF by default so local dev, e2e,
 	// and the AKS-dev smoke suite are never throttled; production enables it
 	// with ORBITAL_RATE_LIMIT_ENABLED=true. Per-IP token buckets, in-memory
-	// (orbital runs single-replica — see ROADMAP HA note). Burst = 2×RPS.
-	// Behind a proxy, per-IP fairness needs c.RealIP() to resolve the true
-	// client via X-Forwarded-For (Istio sets it).
+	// (orbital runs single-replica — see ROADMAP HA note). RateLimitRPS is the
+	// sustained per-IP request/sec for the whole surface; LoginRateLimitRPS is
+	// a tighter bucket on POST /user/login to slow credential brute-force.
+	// Burst = 2×RPS. Behind a proxy, per-IP fairness needs c.RealIP() to
+	// resolve the true client via X-Forwarded-For (Istio sets it).
 	RateLimitEnabled      bool   `envconfig:"ORBITAL_RATE_LIMIT_ENABLED"   default:"false"`
 	RateLimitRPS          int    `envconfig:"ORBITAL_RATE_LIMIT_RPS"       default:"40"`
+	LoginRateLimitRPS     int    `envconfig:"ORBITAL_LOGIN_RATE_LIMIT_RPS" default:"5"`
 	DGraphURL             string `envconfig:"DGRAPH_URL"                      default:"http://localhost:8080/graphql"`
 	DGraphAdminURL        string `envconfig:"DGRAPH_ADMIN_URL"                default:"http://localhost:8080/admin"`
 	RatelURL              string `envconfig:"RATEL_URL"                       default:"http://localhost:8000"`

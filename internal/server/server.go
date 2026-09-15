@@ -23,6 +23,7 @@ import (
 	"github.com/armada/orbital/internal/oci"
 	appversion "github.com/armada/orbital/internal/version"
 	"github.com/armada/orbital/internal/web/data/layout"
+	webtemplates "github.com/armada/orbital/web/templates/orbital"
 	retryablehttp "github.com/hashicorp/go-retryablehttp"
 	"github.com/labstack/echo/v4"
 	echomw "github.com/labstack/echo/v4/middleware"
@@ -66,11 +67,23 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 	// production enables it explicitly. Per-IP token buckets, in-memory
 	// (orbital is single-replica). Denials return a 429 that the central
 	// ErrorHandler renders as the standard envelope (code RATE_LIMITED), with a
-	// Retry-After header.
+	// Retry-After header. A tighter bucket is attached to POST /user/login
+	// below to slow credential brute-force. loginRateLimiter stays nil (and the
+	// login route registers without it) when the feature is off.
+	var loginRateLimiter echo.MiddlewareFunc
 	if cfg.RateLimitEnabled {
 		denyHandler := func(c echo.Context, _ string, _ error) error {
 			c.Response().Header().Set("Retry-After", "1")
 			return echo.NewHTTPError(http.StatusTooManyRequests, "rate limit exceeded — too many requests; retry after a moment")
+		}
+		newLimiter := func(rps int) echo.MiddlewareFunc {
+			return echomw.RateLimiterWithConfig(echomw.RateLimiterConfig{
+				Store: echomw.NewRateLimiterMemoryStoreWithConfig(echomw.RateLimiterMemoryStoreConfig{
+					Rate:  rate.Limit(rps),
+					Burst: rps * 2,
+				}),
+				DenyHandler: denyHandler,
+			})
 		}
 		// General per-IP limiter for the whole surface, skipping the Prometheus
 		// scrape endpoint, K8s probe, and static assets so scrapers/probes are
@@ -86,7 +99,8 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 				return p == "/healthz" || p == "/metrics" || strings.HasPrefix(p, cfg.BasePath+"/static/")
 			},
 		}))
-		logger.Info("rate limiting enabled", "general_rps", cfg.RateLimitRPS)
+		loginRateLimiter = newLimiter(cfg.LoginRateLimitRPS)
+		logger.Info("rate limiting enabled", "general_rps", cfg.RateLimitRPS, "login_rps", cfg.LoginRateLimitRPS)
 	}
 	e.GET("/metrics", metrics.Handler())
 	e.GET("/healthz", func(c echo.Context) error {
@@ -326,7 +340,12 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 	var divHandler *handler.DivergenceHandler
 
 	if db != nil {
-		login := handler.NewLogin(db, cfg.SessionKeys(), cfg.BasePath, logger)
+		login := handler.NewLogin(db, cfg.SessionKeys(), webtemplates.LoginForm(), cfg.BasePath, logger)
+		if loginRateLimiter != nil {
+			root.POST("/user/login", login.Post, loginRateLimiter)
+		} else {
+			root.POST("/user/login", login.Post)
+		}
 		root.POST("/user/logout", login.Logout)
 
 		if orgSvcLoginEnabled {

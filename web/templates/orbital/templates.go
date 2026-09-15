@@ -30,6 +30,12 @@ func page(paths ...string) []string {
 	return files
 }
 
+// LoginForm returns a parsed template for the login form fragment.
+// Used by the login handler to re-render the form with error states.
+func LoginForm() *template.Template {
+	return template.Must(template.ParseFiles("web/templates/orbital/partials/login-form.gohtml"))
+}
+
 // Map builds the full template map at startup. Each entry is an isolated
 // parse set — base layout/components plus one page — so {{define "page"}}
 // is unambiguous per route.
