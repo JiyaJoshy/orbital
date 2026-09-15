@@ -9,16 +9,17 @@ type Base struct {
 
 	UI UIConfig
 
-	Domain          string // default localhost:8080, production console.com
-	Links           []string
-	IsAuthn         bool
-	WebLoginEnabled bool // Keycloak browser login, routed through armada-organization-svc
-	CsrfToken       string
-	AppVersion      string
-	BasePath        string
-	CurrentPath     string
-	CanMutate       bool
-	AdminEmails     []string
+	Domain            string // default localhost:8080, production console.com
+	Links             []string
+	IsAuthn           bool
+	OIDCEnabled       bool // SSO login is configured — either AAD device-code or Keycloak-via-org-svc, per DeviceCodeEnabled
+	DeviceCodeEnabled bool // true = Microsoft/EntraID device-code; false = Keycloak via armada-organization-svc
+	CsrfToken         string
+	AppVersion        string
+	BasePath          string
+	CurrentPath       string
+	CanMutate         bool
+	AdminEmails       []string
 	// PendingDivergences is the count of divergence entries with no operator
 	// resolution yet. Rendered as a badge on the menu so edge drift is visible
 	// without navigating to /divergence-reports — divergence is a notification,

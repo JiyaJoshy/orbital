@@ -131,6 +131,7 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 		Logger:         logger,
 		SkipPrefixes:   []string{"/static/"},
 		SkipExactPaths: []string{"/favicon.ico", "/healthz"},
+		SkipSuffixes:   []string{"/auth/device/poll"},
 		ActorFromContext: func(c echo.Context) string {
 			actor, _ := c.Get("user_email").(string)
 			return actor
@@ -138,13 +139,21 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 	}))
 
 	externalJWTMode := cfg.AuthMode == "external-jwt"
-	// orgSvcLoginEnabled gates the Keycloak browser-login button, routed
-	// through armada-organization-svc — orbital holds no Keycloak client
-	// id/secret of its own and does not implement direct Keycloak or AAD
-	// device-code browser login. Separate from cfg.OIDCIssuerURL below, which
-	// only backs the AAD bearer verifier (API auth for orbctl / third-party
-	// AAD clients) now.
-	orgSvcLoginEnabled := cfg.WebLoginOIDCIssuerURL != "" && cfg.OrganizationSvcURL != ""
+	// oidcEnabled gates browser SSO login (in addition to local email/password,
+	// which is always available separately). ORBITAL_OAUTH2_DEVICE_CODE picks
+	// WHICH provider cfg.OIDCIssuerURL points at: true = AAD device-code
+	// (needs OIDCClientSecret — a confidential client doing its own code
+	// exchange); false = Keycloak via armada-organization-svc (needs
+	// OrganizationSvcURL instead — org-svc holds the Keycloak client secret,
+	// orbital never does). See the OIDCIssuerURL doc comment in config.go for
+	// the AAD-bearer-verifier trade-off of repointing this at Keycloak.
+	oidcEnabled := cfg.OIDCIssuerURL != "" && (cfg.OAuth2DeviceCode && cfg.OIDCClientSecret != "" || !cfg.OAuth2DeviceCode && cfg.OrganizationSvcURL != "")
+	if cfg.OIDCIssuerURL != "" && cfg.OAuth2DeviceCode && cfg.OIDCClientSecret == "" {
+		logger.Warn("ORBITAL_OIDC_CLIENT_SECRET is not set — SSO login disabled")
+	}
+	if cfg.OIDCIssuerURL != "" && !cfg.OAuth2DeviceCode && cfg.OrganizationSvcURL == "" {
+		logger.Warn("ORBITAL_ORGANIZATION_SVC_URL is not set — SSO login disabled")
+	}
 
 	root := e.Group(cfg.BasePath)
 
@@ -158,7 +167,7 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 	//     ORBITAL_JWT_DEFAULT_ROLE via context) OR a session cookie (role
 	//     resolved from the DB). The session fallback keeps orbital's own UI
 	//     usable — humans sign in via Keycloak; AEP's proxied calls carry a
-	//     bearer. Login routes stay registered (orgSvcLoginEnabled unchanged).
+	//     bearer. Login routes stay registered (oidcEnabled unchanged).
 	//     See AUTH.md § External JWT mode.
 	//   - Dev (cfg.Dev=true): apiAuth stays empty so machine-to-machine
 	//     callers like cb-bundler can query /graphql plain-HTTP. Session
@@ -290,7 +299,7 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 		logger.Warn("OCI publishing not configured (ORBITAL_OCI_REGISTRY and ORBITAL_OCI_SIGNING_KEY_PATH) — publish disabled")
 	}
 
-	ui := handler.NewUI(cfg.Dev, cfg.RatelURL, cfg.IssueTrackerURL, orgSvcLoginEnabled, s3Configured, cfg.S3Endpoint, cfg.S3Bucket, cfg.BasePath, db, logger)
+	ui := handler.NewUI(cfg.Dev, cfg.RatelURL, cfg.IssueTrackerURL, oidcEnabled, cfg.OAuth2DeviceCode, s3Configured, cfg.S3Endpoint, cfg.S3Bucket, cfg.BasePath, db, logger)
 	ui.SetOCIConfig(ociConfigured, cfg.OCIRegistry, cfg.OCIRepo)
 	ui.SetExportDir(cfg.ExportDir)
 	ui.SetSchemaPath(cfg.SchemaPath)
@@ -348,16 +357,37 @@ func New(cfg *config.Config, db *ent.Client, rawDB *sql.DB) (*Server, error) {
 		}
 		root.POST("/user/logout", login.Logout)
 
-		if orgSvcLoginEnabled {
+		if oidcEnabled && cfg.OAuth2DeviceCode {
+			// Microsoft/EntraID device-code browser login.
+			oidc, err := handler.NewOIDC(
+				context.Background(),
+				db,
+				cfg.SessionKeys(),
+				cfg.OIDCIssuerURL,
+				cfg.OIDCClientID,
+				cfg.OIDCClientSecret,
+				cfg.OIDCRedirectURL,
+				cfg.BasePath,
+				logger,
+				cfg.AdminEmailSet(),
+				true,
+			)
+			if err != nil {
+				logger.Error("oidc provider init failed", "err", err)
+			} else {
+				root.GET("/auth/device", oidc.DeviceCodeStart)
+				root.POST("/auth/device/poll", oidc.DeviceCodePoll)
+			}
+		} else if oidcEnabled {
 			// Keycloak browser login routed through armada-organization-svc —
 			// see docs/reference/AUTH.md § Keycloak web login.
 			orgSvcOIDC, err := handler.NewOrgSvcOIDC(
 				context.Background(),
 				db,
 				cfg.SessionKeys(),
-				cfg.WebLoginOIDCIssuerURL,
+				cfg.OIDCIssuerURL,
 				cfg.OrganizationSvcURL,
-				cfg.WebLoginOIDCRedirectURL,
+				cfg.OIDCRedirectURL,
 				cfg.BasePath,
 				logger,
 				cfg.AdminEmailSet(),

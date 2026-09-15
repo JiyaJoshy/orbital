@@ -21,10 +21,11 @@ import (
 
 // OrgSvcOIDC implements orbital's Keycloak browser login routed through
 // armada-organization-svc instead of orbital holding its own Keycloak client
-// credentials — an alternative to the direct-Keycloak flow in oidc.go, kept
-// as a separate handler so the two routes never entangle. See
-// docs/reference/AUTH.md § Keycloak web login (org-svc) for the full
-// contract and why this route was not the one ultimately chosen.
+// credentials. Active when ORBITAL_OAUTH2_DEVICE_CODE=false — see oidc.go
+// for the ORBITAL_OAUTH2_DEVICE_CODE=true (Microsoft/EntraID device-code)
+// counterpart; server.go registers exactly one of the two per deployment.
+// See docs/reference/AUTH.md § Keycloak web login (org-svc) for the full
+// contract.
 type OrgSvcOIDC struct {
 	db          *ent.Client
 	sessionKeys auth.SessionKeys
